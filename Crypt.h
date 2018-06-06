@@ -46,6 +46,10 @@ public:
     bool sign(const std::string &msg, std::string &dump);
 
     bool verify(const std::string &msg, const std::string &dump, const std::string &name);
+
+    bool verify_cert(const std::string &root_name, const std::string &name);
+
+    bool verify_cert(const std::string &root_name, const std::string &name, const std::string &common_name);
 };
 
 #endif //CRYPT_CRYPT_H

@@ -160,3 +160,25 @@ bool Crypt::verify(const std::string &msg, const std::string &dump, const std::s
     }
     return true;
 }
+
+/*
+ * Verify certificate named 'name' using certificate named 'root' as CA
+ * return true if verification successful, else false
+ */
+bool Crypt::verify_cert(const std::string &root, const std::string &name) {
+    unsigned result;
+    return mbedtls_x509_crt_verify(certificates[name], certificates[root], nullptr, nullptr, &result, nullptr,
+                                   nullptr) ==
+           0;
+}
+
+/*
+ * Verify certificate named 'name' and its common name 'common_name'
+ * using certificate named 'root' as CA
+ * return true if verification successful, else false
+ */
+bool Crypt::verify_cert(const std::string &root, const std::string &name, const std::string &common_name) {
+    unsigned result;
+    return mbedtls_x509_crt_verify(certificates[name], certificates[root], nullptr, common_name.c_str(), &result,
+                                   nullptr, nullptr) == 0;
+}
