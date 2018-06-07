@@ -3,6 +3,7 @@
     Created on 28 May 2018.
 */
 
+#include <mbedtls/net_sockets.h>
 #include "Crypt.h"
 
 /*
@@ -27,8 +28,12 @@ bool Crypt::initialize(const std::string &personalize) {
  */
 void Crypt::terminate() {
     // delete all certificates
-    for (auto &certificate : certificates)
+    for (auto &certificate : certificates) {
+        mbedtls_x509_crt_free(certificate.second);
         delete (certificate.second);
+    }
+    mbedtls_pk_free(&my_private_key);
+    mbedtls_x509_crt_free(&my_cert);
     mbedtls_ctr_drbg_free(&ctr_drbg);
     mbedtls_entropy_free(&entropy);
 }
@@ -78,6 +83,7 @@ bool Crypt::add_cert(const std::string &name, const char *path) {
 void Crypt::rem_cert(const std::string &name) {
     auto cert = certificates[name];
     certificates.erase(name);
+    mbedtls_x509_crt_free(cert);
     delete (cert);
 }
 
@@ -239,27 +245,37 @@ SecureSock::SecureSock(Crypt *crypt) {
     my_crypt = crypt;
 }
 
-bool SecureSock::init(bool is_client, int port) {
+bool SecureSock::init(bool is_client) {
     this->is_client = is_client;
-    this->port = std::to_string(port);
-    if (!is_client) {
-        mbedtls_net_init(&listen_fd);
+    if (is_client) {
+        mbedtls_net_init(&server_fd);
         mbedtls_ssl_init(&ssl);
         mbedtls_ssl_config_init(&conf);
+        return true;
     } else {
-
+        mbedtls_net_init(&listen_fd);
+        mbedtls_ssl_config_init(&conf);
+        return true;
     }
-    return true;
+}
+
+int SecureSock::bind(int port) {
+    if (is_client) { return 0; }
+    else {
+        int ret;
+        if ((ret = mbedtls_net_bind(&listen_fd, nullptr, std::to_string(port).c_str(), MBEDTLS_NET_PROTO_TCP)) != 0) {
+            mbedtls_printf(" failed\n  ! mbedtls_net_bind returned %d\n\n", ret);
+            return -1;
+        }
+        return 0;
+    }
 }
 
 
-bool SecureSock::start() {
-    int ret;
-    if (!is_client) {
-        if ((ret = mbedtls_net_bind(&listen_fd, nullptr, port.c_str(), MBEDTLS_NET_PROTO_TCP)) != 0) {
-            mbedtls_printf(" [FAIL]\n  ! mbedtls_net_bind returned %d\n\n", ret);
-            return false;
-        }
+bool SecureSock::listen() {
+    if (is_client) { return false; }
+    else {
+        int ret;
         if ((ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
                                                MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
             mbedtls_printf(" failed\n  ! mbedtls_ssl_config_defaults returned %d\n\n", ret);
@@ -272,62 +288,206 @@ bool SecureSock::start() {
             mbedtls_printf(" failed\n  ! mbedtls_ssl_conf_own_cert returned %d\n\n", ret);
             return false;
         }
-        if ((ret = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
+        return true;
+    }
+}
+
+int SecureSock::accept() {
+    if (is_client) { return 0; }
+    else {
+        int ret = 0;
+        auto client = new SSClient;
+        mbedtls_ssl_init(&client->ssl);
+        mbedtls_net_init(&client->client_fd);
+        if ((ret = mbedtls_ssl_setup(&client->ssl, &conf)) != 0) {
             mbedtls_printf(" failed\n  ! mbedtls_ssl_setup returned %d\n\n", ret);
-            return false;
-        }
-        mbedtls_net_context client_fd;
-        mbedtls_net_init(&client_fd);
-        reset:
-        mbedtls_net_free(&client_fd);
-        mbedtls_ssl_session_reset(&ssl);
-        if ((ret = mbedtls_net_accept(&listen_fd, &client_fd, nullptr, 0, nullptr)) != 0) {
+        } else if ((ret = mbedtls_net_accept(&listen_fd, &client->client_fd, nullptr, 0, nullptr)) != 0) {
             mbedtls_printf(" failed\n  ! mbedtls_net_accept returned %d\n\n", ret);
-            return false;
-        }
-        mbedtls_ssl_set_bio(&ssl, &client_fd, mbedtls_net_send, mbedtls_net_recv, nullptr);
-        while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
-            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-                mbedtls_printf(" failed\n  ! mbedtls_ssl_handshake returned %d\n\n", ret);
-                goto reset;
+        } else {
+            mbedtls_ssl_set_bio(&client->ssl, &client->client_fd, mbedtls_net_send, mbedtls_net_recv, nullptr);
+            while ((ret = mbedtls_ssl_handshake(&client->ssl)) != 0) {
+                if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+                    mbedtls_printf(" failed\n  ! mbedtls_ssl_handshake returned %d\n\n", ret);
+                    break;
+                }
             }
         }
+        if (ret != 0) {
+            mbedtls_ssl_free(&client->ssl);
+            mbedtls_net_free(&client->client_fd);
+            delete (client);
+            return -1;
+        }
+        sock_map[client->client_fd.fd] = client;
+        return client->client_fd.fd;
+    }
+}
 
-
-//        do {
-//            len = sizeof(buf) - 1;
-//            memset(buf, 0, sizeof(buf));
-//            ret = mbedtls_ssl_read(&ssl, buf, len);
-//
-//            if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
-//                continue;
-//            if (ret <= 0) {
-//                switch (ret) {
-//                    case MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY:
-//                        mbedtls_printf(" connection was closed gracefully\n");
-//                        break;
-//
-//                    case MBEDTLS_ERR_NET_CONN_RESET:
-//                        mbedtls_printf(" connection was reset by peer\n");
-//                        break;
-//
-//                    default:
-//                        mbedtls_printf(" mbedtls_ssl_read returned -0x%x\n", -ret);
-//                        break;
-//                }
-//
-//                break;
-//            }
-//
-//            len = ret;
-//            mbedtls_printf(" %d bytes read\n\n%s", len, (char *) buf);
-//
-//            if (ret > 0)
-//                break;
-//        } while (1);
-
+ssize_t SecureSock::read(int fd, unsigned char *buf, size_t count) {
+    if (is_client) {
+        int ret;
+        memset(buf, 0, count);
+        ret = mbedtls_ssl_read(&ssl, buf, count);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+            return -1;
+        if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY)
+            return 0;
+        if (ret < 0) {
+            mbedtls_printf("failed\n  ! mbedtls_ssl_read returned %d\n\n", ret);
+            return -1;
+        }
+        if (ret == 0) {
+            mbedtls_printf("\n\nEOF\n\n");
+            return 0;
+        }
+        mbedtls_printf(" %zu bytes read\n\n%s", count, (char *) buf);
+        return ret;
     } else {
+        int ret = 0;
+        auto client = sock_map[fd];
+        memset(buf,
+               0, count);
+        ret = mbedtls_ssl_read(&client->ssl, buf, count);
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE)
+            return -1;
+        if (ret <= 0) {
+            switch (ret) {
+                case MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY:
+                    mbedtls_printf(" connection was closed gracefully\n");
+                    return 0;
 
+                case MBEDTLS_ERR_NET_CONN_RESET:
+                    mbedtls_printf(" connection was reset by peer\n");
+                    return 0;
+
+                default:
+                    mbedtls_printf(" mbedtls_ssl_read returned -0x%x\n", -ret);
+            }
+            return ret == 0 ? 0 : -1;
+        }
+        mbedtls_printf(" %d bytes read\n\n%s", ret, (char *) buf);
+        return
+                ret;
+    }
+}
+
+ssize_t SecureSock::write(int fd, const unsigned char *buf, size_t count) {
+    if (is_client) {
+        int ret;
+        while ((ret = mbedtls_ssl_write(&ssl, buf, count)) <= 0) {
+            if (ret == MBEDTLS_ERR_NET_CONN_RESET) {
+                mbedtls_printf(" failed\n  ! peer closed the connection\n\n");
+                return 0;
+            }
+            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_write returned %d\n\n", ret);
+                return -1;
+            }
+        }
+        mbedtls_printf(" %zu bytes written\n\n%s", count, (char *) buf);
+        return ret;
+    } else {
+        int ret;
+        auto client = sock_map[fd];
+        while ((ret = mbedtls_ssl_write(&client->ssl, buf, count)) <= 0) {
+            if (ret == MBEDTLS_ERR_NET_CONN_RESET) {
+                mbedtls_printf(" failed\n  ! peer closed the connection\n\n");
+                return 0;
+            }
+            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_write returned %d\n\n", ret);
+                return -1;
+            }
+        }
+        mbedtls_printf(" %d bytes written\n\n%s\n", ret, (char *) buf);
+        return ret;
+    }
+}
+
+bool SecureSock::close(int fd) {
+    if (is_client) {
+        return true;
+    } else {
+        int ret;
+        auto client = sock_map[fd];
+        while ((ret = mbedtls_ssl_close_notify(&client->ssl)) < 0) {
+            if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+                mbedtls_printf(" failed\n  ! mbedtls_ssl_close_notify returned %d\n\n", ret);
+                return false;
+            }
+        }
+        mbedtls_ssl_free(&client->ssl);
+        mbedtls_net_free(&client->client_fd);
+        delete (client);
+        sock_map.erase(fd);
+        return true;
+    }
+}
+
+bool SecureSock::close() {
+    if (is_client) {
+        mbedtls_ssl_close_notify(&ssl);
+        mbedtls_net_free(&server_fd);
+        mbedtls_ssl_free(&ssl);
+        mbedtls_ssl_config_free(&conf);
+        return true;
+    } else {
+        for (auto &pair:sock_map)
+            close(pair.first);
+        mbedtls_net_free(&listen_fd);
+        mbedtls_ssl_config_free(&conf);
+        return true;
+    }
+}
+
+bool SecureSock::terminate() {
+    return true;
+}
+
+bool SecureSock::connect(const std::string &hostname, const std::string &server_name, int port) {
+    int ret = 0;
+    auto cacert = *my_crypt->certificates["cacert"];
+    if ((ret = mbedtls_net_connect(&server_fd, server_name.c_str(), std::to_string(port).c_str(),
+                                   MBEDTLS_NET_PROTO_TCP)) != 0) {
+        mbedtls_printf(" failed\n  ! mbedtls_net_connect returned %d\n\n", ret);
+        close();
+        return false;
+    }
+    if ((ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                           MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
+        mbedtls_printf(" failed\n  ! mbedtls_ssl_config_defaults returned %d\n\n", ret);
+        close();
+        return false;
+    }
+    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+    mbedtls_ssl_conf_ca_chain(&conf, &cacert, nullptr);
+    mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &my_crypt->ctr_drbg);
+    mbedtls_ssl_conf_dbg(&conf, nullptr, stdout);
+    if ((ret = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
+        mbedtls_printf(" failed\n  ! mbedtls_ssl_setup returned %d\n\n", ret);
+        close();
+        return false;
+    }
+    if ((ret = mbedtls_ssl_set_hostname(&ssl, hostname.c_str())) != 0) {
+        mbedtls_printf(" failed\n  ! mbedtls_ssl_set_hostname returned %d\n\n", ret);
+        close();
+        return false;
+    }
+    mbedtls_ssl_set_bio(&ssl, &server_fd, mbedtls_net_send, mbedtls_net_recv, nullptr);
+    while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
+        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
+            mbedtls_printf(" failed\n  ! mbedtls_ssl_handshake returned -0x%x\n\n", -ret);
+            close();
+            return false;
+        }
+    }
+    uint32_t flags;
+    if ((flags = mbedtls_ssl_get_verify_result(&ssl)) != 0) {
+        char vrfy_buf[512];
+        mbedtls_printf(" failed\n");
+        mbedtls_x509_crt_verify_info(vrfy_buf, sizeof(vrfy_buf), "  ! ", flags);
+        mbedtls_printf("%s\n", vrfy_buf);
     }
     return true;
 }
+

@@ -69,22 +69,43 @@ public:
 
 
 class SecureSock {
-    mbedtls_net_context listen_fd;
-    mbedtls_ssl_context ssl;
-    mbedtls_ssl_config conf;
     Crypt *my_crypt;
     bool is_client;
-    std::string port;
+    // Server vars
+    mbedtls_net_context listen_fd;
+    struct SSClient {
+        mbedtls_net_context client_fd;
+        mbedtls_ssl_context ssl;
+    };
+    std::map<int, SSClient *> sock_map;
+    // Client vars
+    mbedtls_ssl_context ssl;
+    mbedtls_net_context server_fd;
+    // Common
+    mbedtls_ssl_config conf;
 public:
     explicit SecureSock(Crypt *crypt);
 
-    bool init(bool is_client, int port);
+    bool init(bool is_client);
 
-    bool start();
+    int bind(int port);
 
-    bool read();
+    // Todo: mention how many in listen queue
+    bool listen();
 
-    bool write();
+    int accept();
+
+    ssize_t read(int fd, unsigned char *buf, size_t count);
+
+    ssize_t write(int fd, const unsigned char *buf, size_t count);
+
+    bool close(int fd);
+
+    bool close();
+
+    bool connect(const std::string &hostname, const std::string &server_name, int port);
+
+    bool terminate();
 };
 
 
