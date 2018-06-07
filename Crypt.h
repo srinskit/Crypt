@@ -23,6 +23,11 @@
 #include <fstream>
 #include <sstream>
 
+namespace SecureSock {
+    class Server;
+
+    class Client;
+}
 class Crypt {
     mbedtls_entropy_context entropy;
     mbedtls_ctr_drbg_context ctr_drbg;
@@ -64,49 +69,68 @@ public:
 
     bool certify_string(const std::string &buff, const std::string &name);
 
-    friend class SecureSock;
+    friend class SecureSock::Server;
+
+    friend class SecureSock::Client;
 };
 
 
-class SecureSock {
-    Crypt *my_crypt;
-    bool is_client;
-    // Server vars
-    mbedtls_net_context listen_fd;
-    struct SSClient {
-        mbedtls_net_context client_fd;
-        mbedtls_ssl_context ssl;
+namespace SecureSock {
+    class Server {
+        Crypt *my_crypt;
+        mbedtls_ssl_config conf;
+        mbedtls_net_context listen_fd;
+        struct SSClient {
+            mbedtls_net_context client_fd;
+            mbedtls_ssl_context ssl;
+        };
+        std::map<int, SSClient *> sock_map;
+    public:
+        explicit Server(Crypt *crypt);
+
+        bool init();
+
+        int bind(int port);
+
+        // Todo: mention how many in listen queue
+        bool listen();
+
+        int accept();
+
+        // Todo: A support for multiple buffer length reads using ioctl
+        ssize_t read(int fd, std::string &msg, size_t count = 2048);
+
+        ssize_t write(int fd, const std::string &msg);
+
+        bool close(int fd);
+
+        bool close();
+
+        bool terminate();
     };
-    std::map<int, SSClient *> sock_map;
-    // Client vars
-    mbedtls_ssl_context ssl;
-    mbedtls_net_context server_fd;
-    // Common
-    mbedtls_ssl_config conf;
-public:
-    explicit SecureSock(Crypt *crypt);
 
-    bool init(bool is_client);
+    class Client {
+        Crypt *my_crypt;
+        mbedtls_ssl_config conf;
+        mbedtls_ssl_context ssl;
+        mbedtls_net_context server_fd;
+    public:
+        explicit Client(Crypt *crypt);
 
-    int bind(int port);
+        bool init();
 
-    // Todo: mention how many in listen queue
-    bool listen();
+        bool connect(const std::string &hostname, const std::string &server_name, int port,
+                     const std::string &ca_cert = "root");
 
-    int accept();
+        ssize_t read(std::string &msg, size_t count = 2048);
 
-    ssize_t read(int fd, unsigned char *buf, size_t count);
+        ssize_t write(const std::string &msg);
 
-    ssize_t write(int fd, const unsigned char *buf, size_t count);
+        bool close();
 
-    bool close(int fd);
-
-    bool close();
-
-    bool connect(const std::string &hostname, const std::string &server_name, int port);
-
-    bool terminate();
-};
+        bool terminate();
+    };
+}
 
 
 #endif //CRYPT_CRYPT_H
