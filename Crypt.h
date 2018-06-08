@@ -35,6 +35,7 @@ class Crypt {
     // TODO: secure delete private key
     mbedtls_pk_context my_private_key;
     mbedtls_x509_crt my_cert;
+    std::map<std::string, mbedtls_aes_context*> aes_map;
 public:
 
     bool initialize(const std::string &personalize);
@@ -69,6 +70,18 @@ public:
 
     bool certify_string(const std::string &buff, const std::string &name);
 
+    bool gen_aes_key(std::string &key);
+
+    bool save_aes_key(const std::string &name, const std::string &key);
+
+    bool save_aes_key(const std::string &name);
+
+    bool del_aes_key(const std::string &name);
+
+    bool encrypt_sym(const std::string &msg, const std::string &key_name, std::string &dump);
+
+    bool decrypt_sym(const std::string &dump, const std::string &key_name, std::string &msg);
+
     friend class SecureSock::Server;
 
     friend class SecureSock::Client;
@@ -90,7 +103,7 @@ namespace SecureSock {
 
         bool init();
 
-        int bind(int port);
+        bool bind(int port);
 
         // Todo: mention how many in listen queue
         bool listen();

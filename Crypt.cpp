@@ -4,7 +4,13 @@
 */
 
 #include <mbedtls/net_sockets.h>
+#include <mbedtls/aes.h>
 #include "Crypt.h"
+
+#define rccuc(x) (reinterpret_cast<const unsigned char *>(x))
+#define rcuc(x) (reinterpret_cast<unsigned char *>(x))
+#define rccc(x) (reinterpret_cast<const char *>(x))
+#define rcc(x) (reinterpret_cast<char *>(x))
 
 /*
  * Initialize libraries
@@ -13,8 +19,7 @@
 bool Crypt::initialize(const std::string &personalize) {
     mbedtls_entropy_init(&entropy);
     mbedtls_ctr_drbg_init(&ctr_drbg);
-    auto ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
-                                     reinterpret_cast<const unsigned char *>(personalize.c_str()),
+    auto ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, rccuc(personalize.c_str()),
                                      personalize.length());
     if (ret != 0) {
         mbedtls_printf(" [FAIL] CRYPT-INIT-1\n\n");
@@ -32,6 +37,8 @@ void Crypt::terminate() {
         mbedtls_x509_crt_free(certificate.second);
         delete (certificate.second);
     }
+    for (auto &pair:aes_map)
+        del_aes_key(pair.first);
     mbedtls_pk_free(&my_private_key);
     mbedtls_x509_crt_free(&my_cert);
     mbedtls_ctr_drbg_free(&ctr_drbg);
@@ -98,7 +105,7 @@ bool Crypt::encrypt(const std::string &msg, const std::string &certificate_name,
     unsigned char result[MBEDTLS_MPI_MAX_SIZE];
     size_t olen = 0;
     auto ret = mbedtls_pk_encrypt(&certificates[certificate_name]->pk,
-                                  reinterpret_cast<const unsigned char *>(msg.c_str()), msg.length(), result, &olen,
+                                  rccuc(msg.c_str()), msg.length(), result, &olen,
                                   sizeof(result), mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0) {
         mbedtls_printf(" [FAIL] mbedtls_pk_encrypt returned -0x%04x\n\n", -ret);
@@ -117,7 +124,7 @@ bool Crypt::encrypt(const std::string &msg, const std::string &certificate_name,
 bool Crypt::decrypt(const std::string &dump, std::string &msg) {
     unsigned char result[MBEDTLS_MPI_MAX_SIZE];
     size_t olen = 0;
-    auto ret = mbedtls_pk_decrypt(&my_private_key, reinterpret_cast<const unsigned char *>(dump.c_str()), dump.length(),
+    auto ret = mbedtls_pk_decrypt(&my_private_key, rccuc(dump.c_str()), dump.length(),
                                   result, &olen, sizeof(result), mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0) {
         mbedtls_printf(" [FAIL] mbedtls_pk_decrypt returned -0x%04x\n\n", -ret);
@@ -136,7 +143,7 @@ bool Crypt::sign(const std::string &msg, std::string &dump) {
     unsigned char result[MBEDTLS_MPI_MAX_SIZE];
     unsigned char hash[32];
     size_t olen = 0;
-    mbedtls_sha256(reinterpret_cast<const unsigned char *>(msg.c_str()), msg.length(), hash, 0);
+    mbedtls_sha256(rccuc(msg.c_str()), msg.length(), hash, 0);
     auto ret = mbedtls_pk_sign(&my_private_key, MBEDTLS_MD_NONE, hash, sizeof(hash), result, &olen,
                                mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0) {
@@ -156,10 +163,10 @@ bool Crypt::verify(const std::string &msg, const std::string &dump, const std::s
     if (certificates.find(name) == certificates.end())
         return false;
     unsigned char hash[32];
-    mbedtls_sha256(reinterpret_cast<const unsigned char *>(msg.c_str()), msg.length(), hash, 0);
+    mbedtls_sha256(rccuc(msg.c_str()), msg.length(), hash, 0);
     // TODO: check why verify seems to work with my_private_key too
     auto ret = mbedtls_pk_verify(&certificates[name]->pk, MBEDTLS_MD_NONE, hash, sizeof(hash),
-                                 reinterpret_cast<const unsigned char *>(dump.c_str()), dump.length());
+                                 rccuc(dump.c_str()), dump.length());
     if (ret != 0) {
         mbedtls_printf(" [FAIL] mbedtls_pk_verify returned -0x%04x\n\n", -ret);
         return false;
@@ -211,7 +218,7 @@ bool Crypt::load_my_cert(const std::string &path, bool name_it_self) {
 std::string Crypt::stringify_cert(const std::string &name) {
     if (certificates.find(name) == certificates.end())
         return nullptr;
-    return std::string(reinterpret_cast<char *>(certificates[name]->raw.p), certificates[name]->raw.len);
+    return std::string(rcc(certificates[name]->raw.p), certificates[name]->raw.len);
 }
 
 
@@ -220,7 +227,7 @@ bool Crypt::certify_string(const std::string &buff, const std::string &common_na
         return false;
     auto certificate = new mbedtls_x509_crt;
     mbedtls_x509_crt_init(certificate);
-    if (mbedtls_x509_crt_parse(certificate, reinterpret_cast<const unsigned char *>(buff.c_str()), buff.length()) ==
+    if (mbedtls_x509_crt_parse(certificate, rccuc(buff.c_str()), buff.length()) ==
         0) {
         bool verified = false;
         for (auto &pair: certificates) {
@@ -241,6 +248,71 @@ bool Crypt::certify_string(const std::string &buff, const std::string &common_na
     return false;
 }
 
+bool Crypt::gen_aes_key(std::string &key) {
+    unsigned char buff[32];
+    int ret;
+    if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, buff, sizeof(buff))) != 0) {
+        mbedtls_printf(" failed\n ! mbedtls_ctr_drbg_random returned -0x%04x\n", -ret);
+        return false;
+    }
+    key.assign(rcc(buff), sizeof(buff));
+    return true;
+}
+
+bool Crypt::save_aes_key(const std::string &name, const std::string &key) {
+    auto aes_e = new mbedtls_aes_context;
+    mbedtls_aes_init(aes_e);
+    mbedtls_aes_setkey_enc(aes_e, rccuc(key.c_str()), 256);
+    aes_map[name] = aes_e;
+    return true;
+}
+
+bool Crypt::save_aes_key(const std::string &name) {
+    std::string key;
+    if (!gen_aes_key(key))return false;
+    return save_aes_key(name, key);
+}
+
+bool Crypt::del_aes_key(const std::string &name) {
+    auto aes_e = aes_map[name];
+    mbedtls_aes_free(aes_e);
+    aes_map.erase(name);
+    delete aes_e;
+    return true;
+}
+
+bool Crypt::encrypt_sym(const std::string &msg, const std::string &key_name, std::string &dump) {
+    unsigned char output[2048];
+    unsigned char iv[16];
+    int ret;
+    auto aes = aes_map[key_name];
+    if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, iv, sizeof(iv))) != 0) {
+        mbedtls_printf(" failed\n ! mbedtls_ctr_drbg_random returned -0x%04x\n", -ret);
+        return false;
+    }
+    dump.assign(rcc(iv), sizeof(iv));
+    if (mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_ENCRYPT, msg.length(), iv, rccuc(msg.c_str()), output) != 0) {
+        dump.clear();
+        return false;
+    }
+    dump.append(rcc(output), msg.length());
+    return true;
+}
+
+bool Crypt::decrypt_sym(const std::string &dump, const std::string &key_name, std::string &msg) {
+    unsigned char output[2048];
+    unsigned char iv[16];
+    auto aes = aes_map[key_name];
+    dump.copy(rcc(iv), sizeof(iv));
+    auto enc_msg = dump.substr(sizeof(iv));
+    if (mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_DECRYPT, enc_msg.length(), iv, rccuc(enc_msg.c_str()), output) != 0) {
+        return false;
+    }
+    msg.append(rcc(output), dump.length() - sizeof(iv));
+    return true;
+}
+
+
 SecureSock::Server::Server(Crypt *crypt) {
     my_crypt = crypt;
 }
@@ -251,13 +323,13 @@ bool SecureSock::Server::init() {
     return true;
 }
 
-int SecureSock::Server::bind(int port) {
+bool SecureSock::Server::bind(int port) {
     int ret;
     if ((ret = mbedtls_net_bind(&listen_fd, nullptr, std::to_string(port).c_str(), MBEDTLS_NET_PROTO_TCP)) != 0) {
         mbedtls_printf(" [FAIL]  ! mbedtls_net_bind returned %d\n\n", ret);
-        return -1;
+        return false;
     }
-    return 0;
+    return true;
 }
 
 
@@ -329,14 +401,14 @@ ssize_t SecureSock::Server::read(int fd, std::string &msg, size_t count) {
         }
         return ret == 0 ? 0 : -1;
     }
-    msg.append(reinterpret_cast<char *>(buf), static_cast<unsigned long>(ret));
+    msg.append(rcc(buf), static_cast<unsigned long>(ret));
     return ret;
 }
 
 ssize_t SecureSock::Server::write(int fd, const std::string &msg) {
     int ret;
     auto client = sock_map[fd];
-    while ((ret = mbedtls_ssl_write(&client->ssl, reinterpret_cast<const unsigned char *>(msg.c_str()),
+    while ((ret = mbedtls_ssl_write(&client->ssl, rccuc(msg.c_str()),
                                     msg.length())) <= 0) {
         if (ret == MBEDTLS_ERR_NET_CONN_RESET) {
             mbedtls_printf(" [FAIL]  ! peer closed the connection\n\n");
@@ -455,13 +527,13 @@ ssize_t SecureSock::Client::read(std::string &msg, size_t count) {
         mbedtls_printf("\n\nEOF\n\n");
         return 0;
     }
-    msg.append(reinterpret_cast<char *>(buf), static_cast<unsigned long>(ret));
+    msg.append(rcc(buf), static_cast<unsigned long>(ret));
     return ret;
 }
 
 ssize_t SecureSock::Client::write(const std::string &msg) {
     int ret;
-    while ((ret = mbedtls_ssl_write(&ssl, reinterpret_cast<const unsigned char *>(msg.c_str()), msg.length())) <= 0) {
+    while ((ret = mbedtls_ssl_write(&ssl, rccuc(msg.c_str()), msg.length())) <= 0) {
         if (ret == MBEDTLS_ERR_NET_CONN_RESET) {
             mbedtls_printf(" [FAIL]  ! peer closed the connection\n\n");
             return 0;
