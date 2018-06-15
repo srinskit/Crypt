@@ -38,7 +38,7 @@ void Crypt::terminate() {
         delete (certificate.second);
     }
     for (auto &pair:aes_map)
-        del_aes_key(pair.first);
+        aes_del_key(pair.first);
     mbedtls_pk_free(&my_private_key);
     mbedtls_x509_crt_free(&my_cert);
     mbedtls_ctr_drbg_free(&ctr_drbg);
@@ -248,7 +248,7 @@ bool Crypt::certify_string(const std::string &buff, const std::string &common_na
     return false;
 }
 
-bool Crypt::gen_aes_key(std::string &key) {
+bool Crypt::aes_gen_key(std::string &key) {
     unsigned char buff[32];
     int ret;
     if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, buff, sizeof(buff))) != 0) {
@@ -259,7 +259,7 @@ bool Crypt::gen_aes_key(std::string &key) {
     return true;
 }
 
-bool Crypt::save_aes_key(const std::string &name, const std::string &key) {
+bool Crypt::aes_save_key(const std::string &name, const std::string &key) {
     auto aes_e = new mbedtls_aes_context;
     mbedtls_aes_init(aes_e);
     mbedtls_aes_setkey_enc(aes_e, rccuc(key.c_str()), 256);
@@ -267,13 +267,13 @@ bool Crypt::save_aes_key(const std::string &name, const std::string &key) {
     return true;
 }
 
-bool Crypt::save_aes_key(const std::string &name) {
+bool Crypt::aes_save_key(const std::string &name) {
     std::string key;
-    if (!gen_aes_key(key))return false;
-    return save_aes_key(name, key);
+    if (!aes_gen_key(key))return false;
+    return aes_save_key(name, key);
 }
 
-bool Crypt::del_aes_key(const std::string &name) {
+bool Crypt::aes_del_key(const std::string &name) {
     auto aes_e = aes_map[name];
     mbedtls_aes_free(aes_e);
     aes_map.erase(name);
@@ -281,7 +281,7 @@ bool Crypt::del_aes_key(const std::string &name) {
     return true;
 }
 
-bool Crypt::encrypt_sym(const std::string &msg, const std::string &key_name, std::string &dump) {
+bool Crypt::aes_encrypt(const std::string &msg, const std::string &key_name, std::string &dump) {
     unsigned char output[2048];
     unsigned char iv[16];
     int ret;
@@ -299,7 +299,7 @@ bool Crypt::encrypt_sym(const std::string &msg, const std::string &key_name, std
     return true;
 }
 
-bool Crypt::decrypt_sym(const std::string &dump, const std::string &key_name, std::string &msg) {
+bool Crypt::aes_decrypt(const std::string &dump, const std::string &key_name, std::string &msg) {
     unsigned char output[2048];
     unsigned char iv[16];
     auto aes = aes_map[key_name];
