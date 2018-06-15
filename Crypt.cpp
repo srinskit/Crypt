@@ -25,6 +25,10 @@ bool Crypt::initialize(const std::string &personalize) {
         mbedtls_printf(" [FAIL] CRYPT-INIT-1\n\n");
         return false;
     }
+    if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, aes_iv, sizeof(aes_iv))) != 0) {
+        mbedtls_printf(" failed\n ! mbedtls_ctr_drbg_random returned -0x%04x\n", -ret);
+        return false;
+    }
     return true;
 }
 
@@ -37,7 +41,7 @@ void Crypt::terminate() {
         mbedtls_x509_crt_free(certificate.second);
         delete (certificate.second);
     }
-    for (auto &pair:aes_map)
+    for (auto &pair:aes_context_map)
         aes_del_key(pair.first);
     mbedtls_pk_free(&my_private_key);
     mbedtls_x509_crt_free(&my_cert);
@@ -263,7 +267,8 @@ bool Crypt::aes_save_key(const std::string &name, const std::string &key) {
     auto aes_e = new mbedtls_aes_context;
     mbedtls_aes_init(aes_e);
     mbedtls_aes_setkey_enc(aes_e, rccuc(key.c_str()), 256);
-    aes_map[name] = aes_e;
+    aes_context_map[name] = aes_e;
+    aes_key_map[name] = key;
     return true;
 }
 
@@ -274,24 +279,19 @@ bool Crypt::aes_save_key(const std::string &name) {
 }
 
 bool Crypt::aes_del_key(const std::string &name) {
-    auto aes_e = aes_map[name];
+    auto aes_e = aes_context_map[name];
     mbedtls_aes_free(aes_e);
-    aes_map.erase(name);
+    aes_context_map.erase(name);
+    aes_key_map.erase(name);
     delete aes_e;
     return true;
 }
 
 bool Crypt::aes_encrypt(const std::string &msg, const std::string &key_name, std::string &dump) {
     unsigned char output[2048];
-    unsigned char iv[16];
-    int ret;
-    auto aes = aes_map[key_name];
-    if ((ret = mbedtls_ctr_drbg_random(&ctr_drbg, iv, sizeof(iv))) != 0) {
-        mbedtls_printf(" failed\n ! mbedtls_ctr_drbg_random returned -0x%04x\n", -ret);
-        return false;
-    }
-    dump.assign(rcc(iv), sizeof(iv));
-    if (mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_ENCRYPT, msg.length(), iv, rccuc(msg.c_str()), output) != 0) {
+    auto aes = aes_context_map[key_name];
+    dump.assign(rcc(aes_iv), sizeof(aes_iv));
+    if (mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_ENCRYPT, msg.length(), aes_iv, rccuc(msg.c_str()), output) != 0) {
         dump.clear();
         return false;
     }
@@ -302,13 +302,24 @@ bool Crypt::aes_encrypt(const std::string &msg, const std::string &key_name, std
 bool Crypt::aes_decrypt(const std::string &dump, const std::string &key_name, std::string &msg) {
     unsigned char output[2048];
     unsigned char iv[16];
-    auto aes = aes_map[key_name];
+    auto aes = aes_context_map[key_name];
     dump.copy(rcc(iv), sizeof(iv));
     auto enc_msg = dump.substr(sizeof(iv));
     if (mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_DECRYPT, enc_msg.length(), iv, rccuc(enc_msg.c_str()), output) != 0) {
         return false;
     }
     msg.append(rcc(output), dump.length() - sizeof(iv));
+    return true;
+}
+
+bool Crypt::aes_exist_key(const std::string &name) {
+    return aes_key_map.find(name) != aes_key_map.end();
+}
+
+bool Crypt::aes_get_key(const std::string &name, std::string &key) {
+    auto it = aes_key_map.find(name);
+    if (it == aes_key_map.end()) return false;
+    key = it->second;
     return true;
 }
 

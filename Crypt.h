@@ -35,7 +35,9 @@ class Crypt {
     // TODO: secure delete private key
     mbedtls_pk_context my_private_key;
     mbedtls_x509_crt my_cert;
-    std::map<std::string, mbedtls_aes_context *> aes_map;
+    std::map<std::string, mbedtls_aes_context *> aes_context_map;
+    std::map<std::string, std::string> aes_key_map;
+    unsigned char aes_iv[16];
 public:
 
     bool initialize(const std::string &personalize);
@@ -81,6 +83,10 @@ public:
     bool aes_encrypt(const std::string &msg, const std::string &key_name, std::string &dump);
 
     bool aes_decrypt(const std::string &dump, const std::string &key_name, std::string &msg);
+
+    bool aes_exist_key(const std::string &name);
+
+    bool aes_get_key(const std::string &name, std::string &key);
 
     friend class SecureSock::Server;
 
