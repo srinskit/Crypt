@@ -3,14 +3,13 @@
     Created on 28 May 2018.
 */
 
-#include <mbedtls/net_sockets.h>
-#include <mbedtls/aes.h>
 #include "Crypt.h"
 
 #define rccuc(x) (reinterpret_cast<const unsigned char *>(x))
 #define rcuc(x) (reinterpret_cast<unsigned char *>(x))
 #define rccc(x) (reinterpret_cast<const char *>(x))
 #define rcc(x) (reinterpret_cast<char *>(x))
+
 
 /*
  * Initialize libraries
@@ -77,14 +76,17 @@ bool Crypt::load_private_key(const std::string &path, const std::string &passwor
  * Load certificate from 'path' and store it in map 'certificates' against 'name'
  * returns true on success, false if certificate of 'name' exists or file parse failed
  */
-bool Crypt::add_cert(const std::string &name, const char *path) {
+bool Crypt::add_cert(const std::string &name, const std::string &path, const std::string &next) {
     if (certificates.find(name) != certificates.end())
         return false;
     auto certificate = new mbedtls_x509_crt;
     mbedtls_x509_crt_init(certificate);
-    if (mbedtls_x509_crt_parse_file(certificate, path) != 0)
+    if (mbedtls_x509_crt_parse_file(certificate, path.c_str()) != 0)
         return false;
     certificates[name] = certificate;
+    if (next.length() != 0) {
+        certificate->next = certificates[next];
+    }
     return true;
 }
 
@@ -201,12 +203,14 @@ bool Crypt::verify_cert(const std::string &root, const std::string &name, const 
 }
 
 
-bool Crypt::load_my_cert(const std::string &path, bool name_it_self) {
+bool Crypt::load_my_cert(const std::string &path, const std::string &next, bool name_it_self) {
     if (name_it_self && certificates.find("self") != certificates.end())
         return false;
     mbedtls_x509_crt_init(&my_cert);
     if (mbedtls_x509_crt_parse_file(&my_cert, path.c_str()) != 0)
         return false;
+    if (next.length() != 0)
+        my_cert.next = certificates[next];
     if (name_it_self) {
         auto certificate = new mbedtls_x509_crt;
         mbedtls_x509_crt_init(certificate);
@@ -252,6 +256,10 @@ bool Crypt::certify_string(const std::string &buff, const std::string &common_na
     return false;
 }
 
+/*
+ * Generate a 256 bit AES key and store in into 'key'
+ * return true on success, false on failure
+ */
 bool Crypt::aes_gen_key(std::string &key) {
     unsigned char buff[32];
     int ret;
@@ -263,22 +271,45 @@ bool Crypt::aes_gen_key(std::string &key) {
     return true;
 }
 
+/*
+ * Save the AES key 'key' such that it can be addressable by 'name'
+ * Save the key in a name-vs-key map (to enable raw access)
+ * Initialize and save the name-vs-aes_context map
+ * return true on success, false on failure
+ * Todo: global keys not thread-safe
+ */
 bool Crypt::aes_save_key(const std::string &name, const std::string &key) {
     auto aes_e = new mbedtls_aes_context;
     mbedtls_aes_init(aes_e);
-    mbedtls_aes_setkey_enc(aes_e, rccuc(key.c_str()), 256);
+    int ret;
+    if ((ret = mbedtls_aes_setkey_enc(aes_e, rccuc(key.c_str()), 256)) != 0) {
+        mbedtls_printf(" failed\n ! mbedtls_aes_setkey_enc returned -0x%04x\n", -ret);
+        return false;
+    }
     aes_context_map[name] = aes_e;
     aes_key_map[name] = key;
     return true;
 }
 
+/*
+ * Generate a 256 bit AES key that can be addressed by 'name'
+ * return true on success, false on failure
+ */
 bool Crypt::aes_save_key(const std::string &name) {
     std::string key;
     if (!aes_gen_key(key))return false;
     return aes_save_key(name, key);
 }
 
+/*
+ * Delete key addressed by 'name'
+ * Free the referenced aes_context erase map records
+ * return true on success, false if 'name' was not found
+ * Todo: global keys not thread-safe
+ */
 bool Crypt::aes_del_key(const std::string &name) {
+    if (aes_key_map.find(name) == aes_key_map.end())
+        return false;
     auto aes_e = aes_context_map[name];
     mbedtls_aes_free(aes_e);
     aes_context_map.erase(name);
@@ -287,11 +318,25 @@ bool Crypt::aes_del_key(const std::string &name) {
     return true;
 }
 
+/*
+ * Encrypt 'msg' using AES key referred to by 'key_name' and assign the result to 'dump'
+ * Mind the max message size of 2048(buff) - 16(IV)  bytes
+ * return true on success, false if 'key_name' was not found, 'msg' too big
+ * or encryption failure
+ * Todo: fix conservative assumption: output.len = IV.len + msg.len.
+ * Todo: common IV and global keys not thread-safe
+ */
 bool Crypt::aes_encrypt(const std::string &msg, const std::string &key_name, std::string &dump) {
     unsigned char output[2048];
-    auto aes = aes_context_map[key_name];
+    if (msg.length() > (sizeof(output) - sizeof(aes_iv))) return false;
+    auto it = aes_context_map.find(key_name);
+    if (it == aes_context_map.end()) return false;
+    auto aes = it->second;
     dump.assign(rcc(aes_iv), sizeof(aes_iv));
-    if (mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_ENCRYPT, msg.length(), aes_iv, rccuc(msg.c_str()), output) != 0) {
+    int ret;
+    if ((ret = mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_ENCRYPT, msg.length(), aes_iv, rccuc(msg.c_str()), output)) !=
+        0) {
+        mbedtls_printf(" failed\n ! mbedtls_aes_crypt_cfb8 returned -0x%04x\n", -ret);
         dump.clear();
         return false;
     }
@@ -299,23 +344,46 @@ bool Crypt::aes_encrypt(const std::string &msg, const std::string &key_name, std
     return true;
 }
 
+/*
+ * Decrypt 'dump' using AES key referred to by 'key_name' and append result to 'msg'
+ * Mind the max dump size of 2048(buff) + 16(IV)  bytes
+ * return true on success, false if 'key_name' not found, 'dump' too big or too small
+ * or decryption failure
+ * Todo: confirm encryption assumptions, make max decrypt dump size = max encrypt dump size
+ * Todo: global keys not thread-safe
+ */
 bool Crypt::aes_decrypt(const std::string &dump, const std::string &key_name, std::string &msg) {
     unsigned char output[2048];
     unsigned char iv[16];
-    auto aes = aes_context_map[key_name];
-    dump.copy(rcc(iv), sizeof(iv));
+    auto msg_size = dump.length() - sizeof(iv);
+    if (msg_size > sizeof(output)) return false;
+    auto it = aes_context_map.find(key_name);
+    if (it == aes_context_map.end()) return false;
+    auto aes = it->second;
+    if (dump.copy(rcc(iv), sizeof(iv)) != sizeof(iv)) return false;
     auto enc_msg = dump.substr(sizeof(iv));
-    if (mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_DECRYPT, enc_msg.length(), iv, rccuc(enc_msg.c_str()), output) != 0) {
+    int ret;
+    if ((ret = mbedtls_aes_crypt_cfb8(aes, MBEDTLS_AES_DECRYPT, enc_msg.length(), iv, rccuc(enc_msg.c_str()),
+                                      output)) != 0) {
+        mbedtls_printf(" failed\n ! mbedtls_aes_crypt_cfb8 returned -0x%04x\n", -ret);
         return false;
     }
-    msg.append(rcc(output), dump.length() - sizeof(iv));
+    msg.append(rcc(output), msg_size);
     return true;
 }
 
+/*
+ * Check if a AES key tagged 'name' exists
+ * return true if exists, else false
+ */
 bool Crypt::aes_exist_key(const std::string &name) {
     return aes_key_map.find(name) != aes_key_map.end();
 }
 
+/*
+ * Copies AES key tagged 'name' into 'key'
+ * returns true if such a key exists, else false
+ */
 bool Crypt::aes_get_key(const std::string &name, std::string &key) {
     auto it = aes_key_map.find(name);
     if (it == aes_key_map.end()) return false;
@@ -323,6 +391,34 @@ bool Crypt::aes_get_key(const std::string &name, std::string &key) {
     return true;
 }
 
+/*
+ * Print error message given mbedtls error code
+ * For internal use
+ */
+void Crypt::print_internal_error(int err_code) {
+    mbedtls_strerror(err_code, error_buff, sizeof(error_buff));
+    printf("%s\n", error_buff);
+}
+
+/*
+ * Pass as debug callback to supported mbedtls functions for debug info on stdout
+ * For internal use
+ */
+void my_debug(void *ctx, int level, const char *file, int line,
+              const char *str) {
+    return;
+    const char *p, *basename;
+    (void) ctx;
+
+    /* Extract basename from file */
+    for (p = basename = file; *p != '\0'; p++) {
+        if (*p == '/' || *p == '\\') {
+            basename = p + 1;
+        }
+    }
+
+    mbedtls_printf("%s:%04d: |%d| %s", basename, line, level, str);
+}
 
 SecureSock::Server::Server(Crypt *crypt) {
     my_crypt = crypt;
@@ -343,17 +439,23 @@ bool SecureSock::Server::bind(int port) {
     return true;
 }
 
-
-bool SecureSock::Server::listen() {
+bool SecureSock::Server::listen(const std::string &ca_cert, bool require_client_auth) {
     int ret;
     if ((ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
                                            MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
         mbedtls_printf(" [FAIL]  ! mbedtls_ssl_config_defaults returned %d\n\n", ret);
         return false;
     }
+    if (require_client_auth) {
+        mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+        mbedtls_ssl_conf_ca_chain(&conf, my_crypt->certificates[ca_cert], nullptr);
+    }
+    else{
+        mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
+    }
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &my_crypt->ctr_drbg);
-    mbedtls_ssl_conf_dbg(&conf, nullptr, stdout);
-    mbedtls_ssl_conf_ca_chain(&conf, my_crypt->my_cert.next, nullptr);
+    mbedtls_ssl_conf_dbg(&conf, my_debug, nullptr);
+    mbedtls_debug_set_threshold(4);
     if ((ret = mbedtls_ssl_conf_own_cert(&conf, &my_crypt->my_cert, &my_crypt->my_private_key)) != 0) {
         mbedtls_printf(" [FAIL]  ! mbedtls_ssl_conf_own_cert returned %d\n\n", ret);
         return false;
@@ -375,8 +477,21 @@ int SecureSock::Server::accept() {
         while ((ret = mbedtls_ssl_handshake(&client->ssl)) != 0) {
             if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
                 mbedtls_printf(" [FAIL]  ! mbedtls_ssl_handshake returned %d\n\n", ret);
+                my_crypt->print_internal_error(ret);
                 break;
             }
+        }
+        // Todo: Confirm if looping is a threat
+//        if ((ret = mbedtls_ssl_handshake(&client->ssl)) != 0) {
+//            mbedtls_printf(" [FAIL]  ! mbedtls_ssl_handshake returned %d\n\n", ret);
+//            my_crypt->print_internal_error(ret);
+//        }
+        uint32_t flags;
+        if ((flags = mbedtls_ssl_get_verify_result(&client->ssl)) != 0) {
+            char vrfy_buf[512];
+            mbedtls_printf(" failed\n");
+            mbedtls_x509_crt_verify_info(vrfy_buf, sizeof(vrfy_buf), "  ! ", flags);
+            mbedtls_printf("%s\n", vrfy_buf);
         }
     }
     if (ret != 0) {
@@ -419,6 +534,7 @@ ssize_t SecureSock::Server::read(int fd, std::string &msg, size_t count) {
 ssize_t SecureSock::Server::write(int fd, const std::string &msg) {
     int ret;
     auto client = sock_map[fd];
+    // Todo: confirm if looping is a threat
     while ((ret = mbedtls_ssl_write(&client->ssl, rccuc(msg.c_str()),
                                     msg.length())) <= 0) {
         if (ret == MBEDTLS_ERR_NET_CONN_RESET) {
@@ -442,6 +558,11 @@ bool SecureSock::Server::close(int fd) {
             return false;
         }
     }
+    // Todo: Confirm if looping is a threat
+//    if ((ret = mbedtls_ssl_close_notify(&client->ssl)) < 0) {
+//        mbedtls_printf(" [FAIL]  ! mbedtls_ssl_close_notify returned %d\n\n", ret);
+//        return false;
+//    }
     mbedtls_ssl_free(&client->ssl);
     mbedtls_net_free(&client->client_fd);
     delete (client);
@@ -472,11 +593,10 @@ bool SecureSock::Client::init() {
     return true;
 }
 
-bool SecureSock::Client::connect(const std::string &hostname, const std::string &server_name, int port,
-                                 const std::string &ca_cert) {
+bool SecureSock::Client::connect(const std::string &hostname, const std::string &server_location, int port,
+                                 const std::string &ca_cert, bool require_client_auth) {
     int ret = 0;
-    auto cacert = *my_crypt->certificates[ca_cert];
-    if ((ret = mbedtls_net_connect(&server_fd, server_name.c_str(), std::to_string(port).c_str(),
+    if ((ret = mbedtls_net_connect(&server_fd, server_location.c_str(), std::to_string(port).c_str(),
                                    MBEDTLS_NET_PROTO_TCP)) != 0) {
         mbedtls_printf(" [FAIL]  ! mbedtls_net_connect returned %d\n\n", ret);
         close();
@@ -488,10 +608,17 @@ bool SecureSock::Client::connect(const std::string &hostname, const std::string 
         close();
         return false;
     }
-    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
-    mbedtls_ssl_conf_ca_chain(&conf, &cacert, nullptr);
+    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_ca_chain(&conf, my_crypt->certificates[ca_cert], nullptr);
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &my_crypt->ctr_drbg);
-    mbedtls_ssl_conf_dbg(&conf, nullptr, stdout);
+    mbedtls_ssl_conf_dbg(&conf, my_debug, nullptr);
+    mbedtls_debug_set_threshold(4);
+    if (require_client_auth) {
+        if ((ret = mbedtls_ssl_conf_own_cert(&conf, &my_crypt->my_cert, &my_crypt->my_private_key)) != 0) {
+            mbedtls_printf(" failed\n  ! mbedtls_ssl_conf_own_cert returned %d\n\n", ret);
+            return false;
+        }
+    }
     if ((ret = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
         mbedtls_printf(" [FAIL]  ! mbedtls_ssl_setup returned %d\n\n", ret);
         close();
@@ -506,10 +633,19 @@ bool SecureSock::Client::connect(const std::string &hostname, const std::string 
     while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
             mbedtls_printf(" [FAIL]  ! mbedtls_ssl_handshake returned -0x%x\n\n", -ret);
+            my_crypt->print_internal_error(ret);
             close();
             return false;
         }
     }
+    // Todo: Confirm if looping is a threat
+//    if ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
+//        mbedtls_printf(" [FAIL]  ! mbedtls_ssl_handshake returned -0x%x\n\n", -ret);
+//        my_crypt->print_internal_error(ret);
+//        close();
+//        return false;
+//    }
+
     uint32_t flags;
     if ((flags = mbedtls_ssl_get_verify_result(&ssl)) != 0) {
         char vrfy_buf[512];
