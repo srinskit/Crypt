@@ -6,22 +6,23 @@
 #ifndef CRYPT_CRYPT_H
 #define CRYPT_CRYPT_H
 
-#include <mbedtls/entropy.h>
-#include <mbedtls/ctr_drbg.h>
-#include <mbedtls/x509_crt.h>
-#include <mbedtls/pk.h>
-#include <mbedtls/sha256.h>
+#include "mbedtls/entropy.h"
+#include "mbedtls/ctr_drbg.h"
+#include "mbedtls/x509_crt.h"
+#include "mbedtls/pk.h"
+#include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/net_sockets.h"
+#include "mbedtls/aes.h"
 #include "mbedtls/error.h"
-#include "mbedtls/debug.h"
 #include "mbedtls/platform.h"
+#include "mbedtls/debug.h"
 #include <cstring>
 #include <cstdio>
 #include <iostream>
-#include <map>
 #include <fstream>
 #include <sstream>
+#include <map>
 
 namespace SecureSock {
     class Server;
@@ -38,6 +39,10 @@ class Crypt {
     std::map<std::string, mbedtls_aes_context *> aes_context_map;
     std::map<std::string, std::string> aes_key_map;
     unsigned char aes_iv[16];
+    char error_buff[1024];
+
+    void print_internal_error(int ret);
+
 public:
 
     bool initialize(const std::string &personalize);
@@ -49,7 +54,7 @@ public:
 
     bool load_private_key(const std::string &path, const std::string &password);
 
-    bool add_cert(const std::string &name, const char *path);
+    bool add_cert(const std::string &name, const std::string &path, const std::string &next = "");
 
     void rem_cert(const std::string &name);
 
@@ -66,7 +71,7 @@ public:
 
     bool verify_cert(const std::string &root, const std::string &name, const std::string &common_name);
 
-    bool load_my_cert(const std::string &path, bool name_it_self = false);
+    bool load_my_cert(const std::string &path, const std::string &next = "", bool name_it_self = false);
 
     std::string stringify_cert(const std::string &name);
 
@@ -112,7 +117,7 @@ namespace SecureSock {
         bool bind(int port);
 
         // Todo: mention how many in listen queue
-        bool listen();
+        bool listen(const std::string &ca_cert, bool require_client_auth = false);
 
         int accept();
 
@@ -139,7 +144,7 @@ namespace SecureSock {
         bool init();
 
         bool connect(const std::string &hostname, const std::string &server_name, int port,
-                     const std::string &ca_cert = "root");
+                     const std::string &ca_cert = "root", bool require_client_auth = false);
 
         ssize_t read(std::string &msg, size_t count = 2048);
 
