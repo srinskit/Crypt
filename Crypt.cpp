@@ -211,14 +211,8 @@ bool Crypt::load_my_cert(const std::string &path, const std::string &next, bool 
         return false;
     if (next.length() != 0)
         my_cert.next = certificates[next];
-    if (name_it_self) {
-        auto certificate = new mbedtls_x509_crt;
-        mbedtls_x509_crt_init(certificate);
-        if (mbedtls_x509_crt_parse_file(certificate, path.c_str()) != 0) {
-            return false;
-        }
-        certificates["self"] = certificate;
-    }
+    if (name_it_self)
+        add_cert("self", path, next);
     return true;
 }
 
@@ -449,8 +443,7 @@ bool SecureSock::Server::listen(const std::string &ca_cert, bool require_client_
     if (require_client_auth) {
         mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_REQUIRED);
         mbedtls_ssl_conf_ca_chain(&conf, my_crypt->certificates[ca_cert], nullptr);
-    }
-    else{
+    } else {
         mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
     }
     mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &my_crypt->ctr_drbg);
