@@ -38,20 +38,20 @@ bool Crypt::initialize(const std::string &personalize) {
  * Cleanup
  */
 void Crypt::terminate() {
+    // Unchain before free
+    for (auto &certificate : certificates)
+        certificate.second->next = nullptr;
+    // Free
     for (auto &certificate : certificates) {
-        auto cert = certificate.second;
-        mbedtls_x509_crt_free(cert);
-        while (cert != nullptr) {
-            auto tmp = cert;
-            cert = cert->next;
-            delete (tmp);
-        }
+        mbedtls_x509_crt_free(certificate.second);
+        delete (certificate.second);
     }
     for (auto &pair:aes_context_map) {
         mbedtls_aes_free(pair.second);
         delete (pair.second);
     }
     mbedtls_pk_free(&my_private_key);
+    my_cert.next = nullptr;
     mbedtls_x509_crt_free(&my_cert);
     mbedtls_ctr_drbg_free(&ctr_drbg);
     mbedtls_entropy_free(&entropy);
@@ -94,10 +94,8 @@ bool Crypt::add_cert(const std::string &name, const std::string &path, const std
     if (mbedtls_x509_crt_parse_file(certificate, path.c_str()) != 0)
         return false;
     certificates[name] = certificate;
-    if (next.length() != 0) {
-        certificate->next = new mbedtls_x509_crt;
-        *certificate->next = *certificates[next];
-    }
+    if (next.length() != 0)
+        certificate->next = certificates[next];
     return true;
 }
 
@@ -107,12 +105,10 @@ bool Crypt::add_cert(const std::string &name, const std::string &path, const std
 void Crypt::rem_cert(const std::string &name) {
     auto cert = certificates[name];
     certificates.erase(name);
+    // Unchain before free
+    cert->next = nullptr;
     mbedtls_x509_crt_free(cert);
-    while (cert != nullptr) {
-        auto tmp = cert;
-        cert = cert->next;
-        delete (tmp);
-    }
+    delete (cert);
 }
 
 /*
@@ -225,12 +221,10 @@ bool Crypt::load_my_cert(const std::string &path, const std::string &next, bool 
     mbedtls_x509_crt_init(&my_cert);
     if (mbedtls_x509_crt_parse_file(&my_cert, path.c_str()) != 0)
         return false;
-    if (next.length() != 0) {
-        my_cert.next = new mbedtls_x509_crt;
-        *my_cert.next = *certificates[next];
-    }
+    if (next.length() != 0)
+        my_cert.next = certificates[next];
     if (name_it_self)
-        add_cert("self", path, next);
+        return add_cert("self", path, next);
     return true;
 }
 
