@@ -3,6 +3,7 @@
     Created on 28 May 2018.
 */
 
+#include <set>
 #include "Crypt.h"
 
 #define rccuc(x) (reinterpret_cast<const unsigned char *>(x))
@@ -28,6 +29,8 @@ bool Crypt::initialize(const std::string &personalize) {
         mbedtls_printf(" failed\n ! mbedtls_ctr_drbg_random returned -0x%04x\n", -ret);
         return false;
     }
+    mbedtls_x509_crt_init(&my_cert);
+    mbedtls_pk_init(&my_private_key);
     return true;
 }
 
@@ -35,13 +38,19 @@ bool Crypt::initialize(const std::string &personalize) {
  * Cleanup
  */
 void Crypt::terminate() {
-    // delete all certificates
     for (auto &certificate : certificates) {
-        mbedtls_x509_crt_free(certificate.second);
-        delete (certificate.second);
+        auto cert = certificate.second;
+        mbedtls_x509_crt_free(cert);
+        while (cert != nullptr) {
+            auto tmp = cert;
+            cert = cert->next;
+            delete (tmp);
+        }
     }
-    for (auto &pair:aes_context_map)
-        aes_del_key(pair.first);
+    for (auto &pair:aes_context_map) {
+        mbedtls_aes_free(pair.second);
+        delete (pair.second);
+    }
     mbedtls_pk_free(&my_private_key);
     mbedtls_x509_crt_free(&my_cert);
     mbedtls_ctr_drbg_free(&ctr_drbg);
@@ -63,6 +72,7 @@ void Crypt::clear_string(std::string &buff) {
  * return true on success, false on parse fail
  */
 bool Crypt::load_private_key(const std::string &path, const std::string &password) {
+    mbedtls_pk_free(&my_private_key);
     mbedtls_pk_init(&my_private_key);
     auto ret = mbedtls_pk_parse_keyfile(&my_private_key, path.c_str(), password.c_str());
     if (ret != 0) {
@@ -85,7 +95,8 @@ bool Crypt::add_cert(const std::string &name, const std::string &path, const std
         return false;
     certificates[name] = certificate;
     if (next.length() != 0) {
-        certificate->next = certificates[next];
+        certificate->next = new mbedtls_x509_crt;
+        *certificate->next = *certificates[next];
     }
     return true;
 }
@@ -97,7 +108,11 @@ void Crypt::rem_cert(const std::string &name) {
     auto cert = certificates[name];
     certificates.erase(name);
     mbedtls_x509_crt_free(cert);
-    delete (cert);
+    while (cert != nullptr) {
+        auto tmp = cert;
+        cert = cert->next;
+        delete (tmp);
+    }
 }
 
 /*
@@ -206,11 +221,14 @@ bool Crypt::verify_cert(const std::string &root, const std::string &name, const 
 bool Crypt::load_my_cert(const std::string &path, const std::string &next, bool name_it_self) {
     if (name_it_self && certificates.find("self") != certificates.end())
         return false;
+    mbedtls_x509_crt_free(&my_cert);
     mbedtls_x509_crt_init(&my_cert);
     if (mbedtls_x509_crt_parse_file(&my_cert, path.c_str()) != 0)
         return false;
-    if (next.length() != 0)
-        my_cert.next = certificates[next];
+    if (next.length() != 0) {
+        my_cert.next = new mbedtls_x509_crt;
+        *my_cert.next = *certificates[next];
+    }
     if (name_it_self)
         add_cert("self", path, next);
     return true;
@@ -543,8 +561,10 @@ ssize_t SecureSock::Server::write(int fd, const std::string &msg) {
 }
 
 bool SecureSock::Server::close(int fd) {
+    auto it = sock_map.find(fd);
+    if (it == sock_map.end()) return false;
     int ret;
-    auto client = sock_map[fd];
+    auto client = it->second;
     while ((ret = mbedtls_ssl_close_notify(&client->ssl)) < 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
             mbedtls_printf(" [FAIL]  ! mbedtls_ssl_close_notify returned %d\n\n", ret);
