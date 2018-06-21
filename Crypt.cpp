@@ -8,9 +8,6 @@
 
 #define rccuc(x) (reinterpret_cast<const unsigned char *>(x))
 #define rcuc(x) (reinterpret_cast<unsigned char *>(x))
-#define rccc(x) (reinterpret_cast<const char *>(x))
-#define rcc(x) (reinterpret_cast<char *>(x))
-
 
 /*
  * Initialize libraries
@@ -38,10 +35,10 @@ bool Crypt::initialize(const std::string &personalize) {
  * Cleanup
  */
 void Crypt::terminate() {
-    // Unchain before free
+// Unchain before free
     for (auto &certificate : certificates)
         certificate.second->next = nullptr;
-    // Free
+// Free
     for (auto &certificate : certificates) {
         mbedtls_x509_crt_free(certificate.second);
         delete (certificate.second);
@@ -105,7 +102,7 @@ bool Crypt::add_cert(const std::string &name, const std::string &path, const std
 void Crypt::rem_cert(const std::string &name) {
     auto cert = certificates[name];
     certificates.erase(name);
-    // Unchain before free
+// Unchain before free
     cert->next = nullptr;
     mbedtls_x509_crt_free(cert);
     delete (cert);
@@ -181,7 +178,7 @@ bool Crypt::verify(const std::string &msg, const std::string &dump, const std::s
         return false;
     unsigned char hash[32];
     mbedtls_sha256(rccuc(msg.c_str()), msg.length(), hash, 0);
-    // TODO: check why verify seems to work with my_private_key too
+// TODO: check why verify seems to work with my_private_key too
     auto ret = mbedtls_pk_verify(&certificates[name]->pk, MBEDTLS_MD_NONE, hash, sizeof(hash),
                                  rccuc(dump.c_str()), dump.length());
     if (ret != 0) {
@@ -245,7 +242,7 @@ bool Crypt::certify_string(const std::string &buff, const std::string &common_na
         0) {
         bool verified = false;
         for (auto &pair: certificates) {
-            // Todo: check against only trusted sources
+// Todo: check against only trusted sources
             uint32_t result;
             if (mbedtls_x509_crt_verify(certificate, pair.second, nullptr, common_name.c_str(), &result, nullptr,
                                         nullptr) == 0) {
@@ -416,7 +413,7 @@ void my_debug(void *ctx, int level, const char *file, int line,
     const char *p, *basename;
     (void) ctx;
 
-    /* Extract basename from file */
+/* Extract basename from file */
     for (p = basename = file; *p != '\0'; p++) {
         if (*p == '/' || *p == '\\') {
             basename = p + 1;
@@ -486,7 +483,7 @@ int SecureSock::Server::accept() {
                 break;
             }
         }
-        // Todo: Confirm if looping is a threat
+// Todo: Confirm if looping is a threat
 //        if ((ret = mbedtls_ssl_handshake(&client->ssl)) != 0) {
 //            mbedtls_printf(" [FAIL]  ! mbedtls_ssl_handshake returned %d\n\n", ret);
 //            my_crypt->print_internal_error(ret);
@@ -539,7 +536,7 @@ ssize_t SecureSock::Server::read(int fd, std::string &msg, size_t count) {
 ssize_t SecureSock::Server::write(int fd, const std::string &msg) {
     int ret;
     auto client = sock_map[fd];
-    // Todo: confirm if looping is a threat
+// Todo: confirm if looping is a threat
     while ((ret = mbedtls_ssl_write(&client->ssl, rccuc(msg.c_str()),
                                     msg.length())) <= 0) {
         if (ret == MBEDTLS_ERR_NET_CONN_RESET) {
@@ -565,7 +562,7 @@ bool SecureSock::Server::close(int fd) {
             return false;
         }
     }
-    // Todo: Confirm if looping is a threat
+// Todo: Confirm if looping is a threat
 //    if ((ret = mbedtls_ssl_close_notify(&client->ssl)) < 0) {
 //        mbedtls_printf(" [FAIL]  ! mbedtls_ssl_close_notify returned %d\n\n", ret);
 //        return false;
@@ -645,7 +642,7 @@ bool SecureSock::Client::connect(const std::string &hostname, const std::string 
             return false;
         }
     }
-    // Todo: Confirm if looping is a threat
+// Todo: Confirm if looping is a threat
 //    if ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
 //        mbedtls_printf(" [FAIL]  ! mbedtls_ssl_handshake returned -0x%x\n\n", -ret);
 //        my_crypt->print_internal_error(ret);
@@ -711,4 +708,8 @@ bool SecureSock::Client::close() {
 bool SecureSock::Client::terminate() {
     return false;
 }
+
+
+#define rcc(x) (reinterpret_cast<char *>(x))
+#define rccc(x) (reinterpret_cast<const char *>(x))
 
