@@ -23,6 +23,14 @@
 #include <fstream>
 #include <sstream>
 #include <map>
+#include <vector>
+
+#define rccuc(x) (reinterpret_cast<const unsigned char *>(x))
+#define rcuc(x) (reinterpret_cast<unsigned char *>(x))
+#define rccc(x) (reinterpret_cast<const char *>(x))
+#define rcc(x) (reinterpret_cast<char *>(x))
+typedef const std::string &cs;
+typedef std::string &s;
 
 namespace SecureSock {
     class Server;
@@ -45,53 +53,53 @@ class Crypt {
 
 public:
 
-    bool initialize(const std::string &personalize);
+    bool initialize(cs personalize);
 
     void terminate();
 
     // TODO: make more for other types of string
-    void clear_string(std::string &buff);
+    void clear_string(s buff);
 
-    bool load_private_key(const std::string &path, const std::string &password);
+    bool load_private_key(cs path, cs password);
 
-    bool add_cert(const std::string &name, const std::string &path, const std::string &next = "");
+    bool add_cert(cs name, cs path, cs next = "");
 
-    void rem_cert(const std::string &name);
+    void rem_cert(cs name);
 
     // TODO: find better container for unsigned char[]
-    bool encrypt(const std::string &msg, const std::string &certificate_name, std::string &dump);
+    bool encrypt(cs msg, cs certificate_name, s dump);
 
-    bool decrypt(const std::string &dump, std::string &msg);
+    bool decrypt(cs dump, s msg);
 
-    bool sign(const std::string &msg, std::string &dump);
+    bool sign(cs msg, s dump);
 
-    bool verify(const std::string &msg, const std::string &dump, const std::string &name);
+    bool verify(cs msg, cs dump, cs name);
 
-    bool verify_cert(const std::string &root, const std::string &name);
+    bool verify_cert(cs root, cs name);
 
-    bool verify_cert(const std::string &root, const std::string &name, const std::string &common_name);
+    bool verify_cert(cs root, cs name, cs common_name);
 
-    bool load_my_cert(const std::string &path, const std::string &next = "", bool name_it_self = false);
+    bool load_my_cert(cs path, cs next = "", bool name_it_self = false);
 
-    std::string stringify_cert(const std::string &name);
+    std::string stringify_cert(cs name);
 
-    bool certify_string(const std::string &buff, const std::string &name);
+    bool certify_string(cs buff, cs name);
 
-    bool aes_gen_key(std::string &key);
+    bool aes_gen_key(s key);
 
-    bool aes_save_key(const std::string &name, const std::string &key);
+    bool aes_save_key(cs name, cs key);
 
-    bool aes_save_key(const std::string &name);
+    bool aes_save_key(cs name);
 
-    bool aes_del_key(const std::string &name);
+    bool aes_del_key(cs name);
 
-    bool aes_encrypt(const std::string &msg, const std::string &key_name, std::string &dump);
+    bool aes_encrypt(cs msg, cs key_name, s dump);
 
-    bool aes_decrypt(const std::string &dump, const std::string &key_name, std::string &msg);
+    bool aes_decrypt(cs dump, cs key_name, s msg);
 
-    bool aes_exist_key(const std::string &name);
+    bool aes_exist_key(cs name);
 
-    bool aes_get_key(const std::string &name, std::string &key);
+    bool aes_get_key(cs name, s key);
 
     friend class SecureSock::Server;
 
@@ -117,14 +125,14 @@ namespace SecureSock {
         bool bind(int port);
 
         // Todo: mention how many in listen queue
-        bool listen(const std::string &ca_cert, bool require_client_auth = false);
+        bool listen(cs ca_cert, bool require_client_auth = false);
 
         int accept();
 
         // Todo: A support for multiple buffer length reads using ioctl
-        ssize_t read(int fd, std::string &msg, size_t count = 2048);
+        ssize_t read(int fd, s msg, size_t count = 2048);
 
-        ssize_t write(int fd, const std::string &msg);
+        ssize_t write(int fd, cs msg);
 
         bool close(int fd);
 
@@ -143,12 +151,12 @@ namespace SecureSock {
 
         bool init();
 
-        bool connect(const std::string &hostname, const std::string &server_name, int port,
-                     const std::string &ca_cert = "root", bool require_client_auth = false);
+        bool connect(cs hostname, cs server_name, int port,
+                     cs ca_cert = "root", bool require_client_auth = false);
 
-        ssize_t read(std::string &msg, size_t count = 2048);
+        ssize_t read(s msg, size_t count = 2048);
 
-        ssize_t write(const std::string &msg);
+        ssize_t write(cs msg);
 
         bool close();
 
