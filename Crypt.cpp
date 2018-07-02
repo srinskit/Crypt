@@ -65,7 +65,7 @@ void Crypt::clear_string(s buff) {
  * Load private key at 'path' using password 'password' into 'my_private_key'
  * return true on success, false on parse fail
  */
-bool Crypt::load_private_key(cs path, cs password) {
+bool Crypt::load_my_key(cs path, cs password) {
     mbedtls_pk_free(&my_private_key);
     mbedtls_pk_init(&my_private_key);
     auto ret = mbedtls_pk_parse_keyfile(&my_private_key, path.c_str(), password.c_str());
@@ -73,6 +73,23 @@ bool Crypt::load_private_key(cs path, cs password) {
         mbedtls_printf(" [FAIL] mbedtls_pk_parse_keyfile returned -0x%04x\n\n", -ret);
         return false;
     }
+    return true;
+}
+
+/*
+ *
+ */
+bool Crypt::load_my_cert(cs path, cs next, bool name_it_self) {
+    if (name_it_self && certificates.find("self") != certificates.end())
+        return false;
+    mbedtls_x509_crt_free(&my_cert);
+    mbedtls_x509_crt_init(&my_cert);
+    if (mbedtls_x509_crt_parse_file(&my_cert, path.c_str()) != 0)
+        return false;
+    if (next.length() != 0)
+        my_cert.next = certificates[next];
+    if (name_it_self)
+        return add_cert("self", path, next);
     return true;
 }
 
@@ -152,17 +169,16 @@ bool Crypt::decrypt(cs dump, s msg) {
  */
 bool Crypt::sign(cs msg, s dump) {
     unsigned char result[MBEDTLS_MPI_MAX_SIZE];
-    unsigned char hash[32];
+    unsigned char hash[256 / 8];
     size_t olen = 0;
     mbedtls_sha256(rccuc(msg.c_str()), msg.length(), hash, 0);
-    auto ret = mbedtls_pk_sign(&my_private_key, MBEDTLS_MD_NONE, hash, sizeof(hash), result, &olen,
+    auto ret = mbedtls_pk_sign(&my_private_key, MBEDTLS_MD_SHA256, hash, 0, result, &olen,
                                mbedtls_ctr_drbg_random, &ctr_drbg);
     if (ret != 0) {
         mbedtls_printf(" [FAIL] mbedtls_pk_sign returned -0x%04x\n\n", -ret);
         return false;
     }
-    for (int i = 0; i < olen; ++i)
-        dump.append(1, result[i]);
+    dump.append(rcc(result), olen);
     return true;
 }
 
@@ -173,11 +189,11 @@ bool Crypt::sign(cs msg, s dump) {
 bool Crypt::verify(cs msg, cs dump, cs name) {
     if (certificates.find(name) == certificates.end())
         return false;
-    unsigned char hash[32];
+    unsigned char hash[256 / 8];
     mbedtls_sha256(rccuc(msg.c_str()), msg.length(), hash, 0);
 // TODO: check why verify seems to work with my_private_key too
-    auto ret = mbedtls_pk_verify(&certificates[name]->pk, MBEDTLS_MD_NONE, hash, sizeof(hash),
-                                 rccuc(dump.c_str()), dump.length());
+    auto ret = mbedtls_pk_verify(&certificates[name]->pk, MBEDTLS_MD_SHA256, hash, 0, rccuc(dump.c_str()),
+                                 dump.length());
     if (ret != 0) {
         mbedtls_printf(" [FAIL] mbedtls_pk_verify returned -0x%04x\n\n", -ret);
         return false;
@@ -205,21 +221,6 @@ bool Crypt::verify_cert(cs root, cs name, cs common_name) {
     unsigned result;
     return mbedtls_x509_crt_verify(certificates[name], certificates[root], nullptr, common_name.c_str(), &result,
                                    nullptr, nullptr) == 0;
-}
-
-
-bool Crypt::load_my_cert(cs path, cs next, bool name_it_self) {
-    if (name_it_self && certificates.find("self") != certificates.end())
-        return false;
-    mbedtls_x509_crt_free(&my_cert);
-    mbedtls_x509_crt_init(&my_cert);
-    if (mbedtls_x509_crt_parse_file(&my_cert, path.c_str()) != 0)
-        return false;
-    if (next.length() != 0)
-        my_cert.next = certificates[next];
-    if (name_it_self)
-        return add_cert("self", path, next);
-    return true;
 }
 
 
@@ -324,7 +325,7 @@ bool Crypt::aes_del_key(cs name) {
  * return true on success, false if 'key_name' was not found, 'msg' too big
  * or encryption failure
  * Todo: fix conservative assumption: output.len = IV.len + msg.len.
- * Todo: common IV and global keys not thread-safe
+ * Todo: common IV and global keys not thread-safe, fix return true if key is wrong too
  */
 bool Crypt::aes_encrypt(cs msg, cs key_name, s dump) {
     unsigned char output[2048];
@@ -398,6 +399,44 @@ bool Crypt::aes_get_key(cs name, s key) {
 void Crypt::print_internal_error(int err_code) {
     mbedtls_strerror(err_code, error_buff, sizeof(error_buff));
     printf("%s\n", error_buff);
+}
+
+/*
+ * Convert a string of bytes into a hex string
+ * returns true if conversion was successful, else false
+ */
+bool Crypt::bytes_to_hex(cs bytes, s hex) {
+    auto n_to_h = [](int x) {
+        if (x < 10) return static_cast<char>('0' + x);
+        if (x < 16) return static_cast<char>(x - 10 + 'a');
+        return '0';
+    };
+    for (auto &ch:bytes) {
+        hex.append(1, n_to_h((static_cast<unsigned char>(ch) / 16) % 16));
+        hex.append(1, n_to_h(static_cast<unsigned char>(ch) % 16));
+    }
+    return true;
+}
+
+/*
+ * Convert a hex string into a string of bytes
+ * returns true if conversion was successful, else false
+ */
+bool Crypt::hex_to_bytes(cs hex, s bytes) {
+    auto h_to_d = [](char x) {
+        if (x >= '0' && x <= '9') return static_cast<unsigned char>(x - '0');
+        return static_cast<unsigned char>(x - 'a' + 10);
+    };
+    if (hex.length() % 2) return false;
+    int i = 0, byte;
+    while (i < hex.length()) {
+        byte = 16 * h_to_d(hex[i]) + h_to_d(hex[i + 1]);
+        if (byte < 0 || byte > 255)
+            return false;
+        bytes.append(1, byte);
+        i += 2;
+    }
+    return true;
 }
 
 /*

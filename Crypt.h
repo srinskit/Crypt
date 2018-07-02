@@ -52,6 +52,7 @@ class Crypt {
     void print_internal_error(int ret);
 
 public:
+    Crypt() = default;
 
     bool initialize(cs personalize);
 
@@ -60,7 +61,9 @@ public:
     // TODO: make more for other types of string
     void clear_string(s buff);
 
-    bool load_private_key(cs path, cs password);
+    bool load_my_key(cs path, cs password);
+
+    bool load_my_cert(cs path, cs next = "", bool name_it_self = false);
 
     bool add_cert(cs name, cs path, cs next = "");
 
@@ -78,8 +81,6 @@ public:
     bool verify_cert(cs root, cs name);
 
     bool verify_cert(cs root, cs name, cs common_name);
-
-    bool load_my_cert(cs path, cs next = "", bool name_it_self = false);
 
     std::string stringify_cert(cs name);
 
@@ -100,6 +101,10 @@ public:
     bool aes_exist_key(cs name);
 
     bool aes_get_key(cs name, s key);
+
+    bool bytes_to_hex(cs bytes, s hex);
+
+    bool hex_to_bytes(cs hex, s bytes);
 
     friend class SecureSock::Server;
 
