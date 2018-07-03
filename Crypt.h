@@ -48,13 +48,14 @@ class Crypt {
     std::map<std::string, std::string> aes_key_map;
     unsigned char aes_iv[16];
     char error_buff[1024];
+    bool print_errors;
 
     void print_internal_error(int ret);
 
 public:
     Crypt() = default;
 
-    bool initialize(cs personalize);
+    bool initialize(cs personalize, bool print_errors = false);
 
     void terminate();
 
@@ -76,7 +77,13 @@ public:
 
     bool sign(cs msg, s dump);
 
-    bool verify(cs msg, cs dump, cs name);
+    bool verify_sign(cs msg, cs dump, cs name);
+
+    bool checksum(cs msg, s sum);
+
+    bool verify_checksum(cs msg, cs sum);
+
+    int checksum_size();
 
     bool verify_cert(cs root, cs name);
 
